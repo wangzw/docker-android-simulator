@@ -55,7 +55,7 @@ jobs:
           fi
           CMDLINE_URL="${{ github.event.inputs.cmdline_url }}"
           if [ -z "$CMDLINE_URL" ]; then
-            CMDLINE_URL="https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip"
+            CMDLINE_URL="https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip"
           fi
           echo "REGISTRY=$REGISTRY" >> $GITHUB_OUTPUT
           echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_OUTPUT
@@ -71,9 +71,6 @@ jobs:
           - platform: linux/amd64
             runner: ubuntu-latest
             suffix: amd64
-          - platform: linux/arm64
-            runner: ubuntu-24.04-arm
-            suffix: arm64
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
