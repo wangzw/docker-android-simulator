@@ -96,9 +96,9 @@ jobs:
           push: true
           platforms: ${{ matrix.platform }}
           tags: |
-            ${{ needs.set-vars.outputs.REGISTRY }}/${{ needs.set-vars.outputs.IMAGE_NAME }}:latest
-            ${{ needs.set-vars.outputs.REGISTRY }}/${{ needs.set-vars.outputs.IMAGE_NAME }}:${{ matrix.suffix }}
             ${{ needs.set-vars.outputs.REGISTRY }}/${{ needs.set-vars.outputs.IMAGE_NAME }}:${{ github.sha }}-${{ matrix.suffix }}
+            ${{ needs.set-vars.outputs.REGISTRY }}/${{ needs.set-vars.outputs.IMAGE_NAME }}:${{ matrix.suffix }}
+            ${{ needs.set-vars.outputs.REGISTRY }}/${{ needs.set-vars.outputs.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
