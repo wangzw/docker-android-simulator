@@ -28,7 +28,7 @@ on:
       cmdline_tools_url:
         description: 'Optional CMDLINE_TOOLS_URL build-arg to override Android commandline tools URL'
         required: false
-        default: ''
+        default: 'https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip'
 
 permissions:
   contents: read
