@@ -28,7 +28,7 @@ on:
       cmdline_tools_url:
         description: 'Optional CMDLINE_TOOLS_URL build-arg to override Android commandline tools URL'
         required: false
-        default: 'https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip'
+        default: ''
 
 permissions:
   contents: read
@@ -49,12 +49,14 @@ jobs:
           if [ -z "$REGISTRY" ]; then
             REGISTRY="ghcr.io"
           fi
-          if [ -n "${{ github.event.inputs.image_name }}" ]; then
-            IMAGE_NAME="${{ github.event.inputs.image_name }}"
-          else
+          IMAGE_NAME="${{ github.event.inputs.image_name }}"
+          if [ -z "${IMAGE_NAME}" ]; then
             IMAGE_NAME="${{ github.repository }}"
           fi
-          CMDLINE_URL="${{ github.event.inputs.cmdline_tools_url }}"
+          CMDLINE_URL="${{ github.event.inputs.cmdline_url }}"
+          if [ -z "$CMDLINE_URL" ]; then
+            CMDLINE_URL="https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip"
+          fi
           echo "REGISTRY=$REGISTRY" >> $GITHUB_OUTPUT
           echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_OUTPUT
           echo "CMDLINE_URL=$CMDLINE_URL" >> $GITHUB_OUTPUT
