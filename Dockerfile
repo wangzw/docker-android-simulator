@@ -44,12 +44,14 @@ RUN set -eux; \
 # Create default AVD (demo) matching the chosen ABI
 ARG DEFAULT_AVD_NAME
 RUN mkdir -p ${SDK_TOOLS_DIR}/.android && \
-    # avdmanager uses the installed system-image key; force to the selected ABI
     case "${TARGETPLATFORM:-}" in \
       "linux/arm64"*) IMAGE_ARCH_SEL="arm64-v8a" ;; \
       *) IMAGE_ARCH_SEL="x86_64" ;; \
     esac && \
-    echo "no" | avdmanager --sdk_root=${SDK_TOOLS_DIR} create avd -n "${DEFAULT_AVD_NAME}" -k "system-images;android-${ANDROID_API};${IMAGE_TYPE};${IMAGE_ARCH_SEL}" --force || true
+    # export ANDROID_SDK_ROOT so avdmanager uses the right SDK path, then create AVD in same shell
+    export ANDROID_SDK_ROOT=${SDK_TOOLS_DIR} && \
+    echo "Creating AVD with ABI=${IMAGE_ARCH_SEL}" && \
+    echo "no" | avdmanager create avd -n "${DEFAULT_AVD_NAME}" -k "system-images;android-${ANDROID_API};${IMAGE_TYPE};${IMAGE_ARCH_SEL}" --force || true
 
 # Create non-root user and set ownership
 RUN useradd -m -u 1000 android && \
