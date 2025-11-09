@@ -4,7 +4,7 @@ services:
     build:
       context: .
       args:
-        CMDLINE_TOOLS_URL: "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip"
+        CMDLINE_TOOLS_URL: "https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip"
     image: android-emulator:latest
     container_name: android-emulator
     ports:
