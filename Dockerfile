@@ -78,12 +78,12 @@ EOF
 # Create non-root user and set ownership
 RUN useradd -m -u 1000 android && chown -R android:android ${SDK_TOOLS_DIR} /home/android
 
-USER android
-WORKDIR /home/android
-
 # Copy entrypoint
 COPY start-emulator.sh /usr/local/bin/start-emulator.sh
 RUN chmod +x /usr/local/bin/start-emulator.sh
+
+USER android
+WORKDIR /home/android
 
 # Expose emulator / adb ports
 EXPOSE 5554 5555 5037
