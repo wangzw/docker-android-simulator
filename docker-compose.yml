@@ -1,0 +1,20 @@
+version: "3.8"
+services:
+  android-emulator:
+    build:
+      context: .
+      args:
+        CMDLINE_TOOLS_URL: "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip"
+    image: android-emulator:latest
+    container_name: android-emulator
+    ports:
+      - "5555:5555"
+      - "5037:5037"
+    environment:
+      - AVD_NAME=demo
+      - ANDROID_API=33
+      - IMAGE_TYPE=google_apis
+      - IMAGE_ARCH=        # leave blank to use pre-baked ABI selected at build time
+      - AVD_MEMORY=2048
+      - SKIP_SDK_UPDATE=1
+    restart: unless-stopped

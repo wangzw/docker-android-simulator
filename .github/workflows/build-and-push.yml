@@ -1,0 +1,156 @@
+# Multi-arch Docker build & push using a matrix strategy
+# - Matrix builds per-arch images (amd64 + arm64) on appropriate runners
+# - Each matrix entry defines target platform, runner label and tag suffix
+# - A final job composes a multi-arch manifest (latest + sha) from the per-arch images
+#
+# Notes:
+# - The arm64 matrix entry uses runs-on: ubuntu-24.04-arm (native arm runner). If a GitHub-hosted runner
+#   with that label is not available for your account/region, register a self-hosted runner and add the label
+#   'ubuntu-24.04-arm'.
+# - Default registry is ghcr.io. The workflow uses GITHUB_TOKEN to push packages to ghcr; ensure Actions has
+#   packages: write permission in repository settings.
+#
+name: Build and push multi-arch image (matrix)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      registry:
+        description: 'Container registry (e.g. ghcr.io or docker.io)'
+        required: false
+        default: 'ghcr.io'
+      image_name:
+        description: 'Repository/image name (owner/repo style). If empty defaults to github.repository'
+        required: false
+        default: ''
+      cmdline_tools_url:
+        description: 'Optional CMDLINE_TOOLS_URL build-arg to override Android commandline tools URL'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  set-vars:
+    runs-on: ubuntu-latest
+    outputs:
+      REGISTRY: ${{ steps.set.outputs.REGISTRY }}
+      IMAGE_NAME: ${{ steps.set.outputs.IMAGE_NAME }}
+      CMDLINE_URL: ${{ steps.set.outputs.CMDLINE_URL }}
+    steps:
+      - name: Set derived variables
+        id: set
+        run: |
+          REGISTRY="${{ github.event.inputs.registry }}"
+          if [ -z "$REGISTRY" ]; then
+            REGISTRY="ghcr.io"
+          fi
+          if [ -n "${{ github.event.inputs.image_name }}" ]; then
+            IMAGE_NAME="${{ github.event.inputs.image_name }}"
+          else
+            IMAGE_NAME="${{ github.repository }}"
+          fi
+          CMDLINE_URL="${{ github.event.inputs.cmdline_tools_url }}"
+          echo "REGISTRY=$REGISTRY" >> $GITHUB_OUTPUT
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_OUTPUT
+          echo "CMDLINE_URL=$CMDLINE_URL" >> $GITHUB_OUTPUT
+
+  build:
+    name: Build and push per-arch images (matrix)
+    needs: set-vars
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            suffix: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            suffix: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (optional; harmless on native runners)
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ needs.set-vars.outputs.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push image for platform ${{ matrix.platform }}
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          platforms: ${{ matrix.platform }}
+          tags: |
+            ${{ needs.set-vars.outputs.REGISTRY }}/${{ needs.set-vars.outputs.IMAGE_NAME }}:${{ matrix.suffix }}
+            ${{ needs.set-vars.outputs.REGISTRY }}/${{ needs.set-vars.outputs.IMAGE_NAME }}:${{ github.sha }}-${{ matrix.suffix }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            CMDLINE_TOOLS_URL=${{ needs.set-vars.outputs.CMDLINE_URL }}
+
+  create-manifest:
+    name: Create multi-arch manifest (latest + sha)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for context)
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ needs.set-vars.outputs.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Create multi-arch tag: latest"
+        run: |
+          REG="${{ needs.set-vars.outputs.REGISTRY }}"
+          IMG="${{ needs.set-vars.outputs.IMAGE_NAME }}"
+          echo "Creating multi-arch image ${REG}/${IMG}:latest from per-arch images"
+          docker buildx imagetools create --tag "${REG}/${IMG}:latest" \
+            "${REG}/${IMG}:amd64" "${REG}/${IMG}:arm64"
+
+      - name: "Create multi-arch tag: sha"
+        run: |
+          REG="${{ needs.set-vars.outputs.REGISTRY }}"
+          IMG="${{ needs.set-vars.outputs.IMAGE_NAME }}"
+          SHA_TAG="${{ github.sha }}"
+          echo "Creating multi-arch image ${REG}/${IMG}:${SHA_TAG} from per-arch images"
+          docker buildx imagetools create --tag "${REG}/${IMG}:${SHA_TAG}" \
+            "${REG}/${IMG}:${SHA_TAG}-amd64" "${REG}/${IMG}:${SHA_TAG}-arm64"
+
+      - name: Output pushed image names
+        run: |
+          REG="${{ needs.set-vars.outputs.REGISTRY }}"
+          IMG="${{ needs.set-vars.outputs.IMAGE_NAME }}"
+          echo "Multi-arch images pushed:"
+          echo "${REG}/${IMG}:latest"
+          echo "${REG}/${IMG}:${{ github.sha }}"
+
+      - name: (Optional) Login to Docker Hub if credentials provided
+        if: ${{ secrets.DOCKERHUB_USERNAME && secrets.DOCKERHUB_PASSWORD }}
+        uses: docker/login-action@v2
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
