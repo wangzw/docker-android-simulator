@@ -1,45 +1,76 @@
-```markdown
-# android-emulator-multiarch
+# docker-android-simulator — 使用说明
 
-This repo builds a Rocky Linux 9 Docker image for running a headless Android emulator.
-It supports automatically selecting and pre-baking the correct system image ABI for the target build platform
-(x86_64 vs arm64) at image build time.
+这是一个可直接运行的 Android Emulator 容器镜像，便于在本地或 CI 环境中启动模拟器进行调试、UI 测试或自动化任务。
 
-What is included
-- Dockerfile: multi-arch-aware, pre-bakes API 33 + google_apis system image (x86_64 or arm64-v8a depending on build target)
-- start-emulator.sh: entrypoint to create/run AVDs and start emulator in headless software-rendering mode
-- .github/workflows/build-and-push.yml: GitHub Actions workflow to build/push per-arch images and create a multi-arch manifest
-- docker-compose.yml: example run configuration
-- .dockerignore
+快速开始（本地单机测试）
+1. 构建镜像（在 amd64 主机上测试）：
+   docker build --platform linux/amd64 -t wangzw/android-emulator:local .
 
-Quick build (local)
-- Build for current architecture (example for arm64 on Apple Silicon):
-  docker build --platform linux/arm64 -t android-emulator:arm64 --build-arg CMDLINE_TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip" .
+2. 运行（默认 headless，使用预置 AVD 名称 demo）：
+   docker run --rm -it \
+   -e AVD_NAME="demo" \
+   -e ANDROID_API="36" \
+   wangzw/android-emulator:local
 
-- Build multi-arch and push (requires buildx + registry login):
-  docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/OWNER/REPO:latest --push .
+3. 在容器内使用 adb（示例）：
+   docker exec -it <container> adb devices
 
-Run (example)
-- Run with defaults (pre-baked demo AVD, API 33):
-  docker run --rm -it -p 5555:5555 -p 5037:5037 ghcr.io/OWNER/REPO:latest
+GUI（VNC / noVNC）访问
+- 启动容器并映射端口到宿主机：
+  docker run --rm -it \
+  -p 5900:5900 \
+  -p 6080:6080 \
+  -e VNC_ENABLE=1 \
+  -e VNC_PASSWORD="changeme" \
+  wangzw/android-emulator:local
 
-- Run with custom memory and AVD name:
-  docker run --rm -it -p 5555:5555 -p 5037:5037 \
-    -e AVD_NAME="ci_avd" -e AVD_MEMORY="4096" \
-    ghcr.io/OWNER/REPO:latest
+- 访问方式：
+    - 使用 VNC 客户端连接：host:5900，输入 VNC_PASSWORD（如设置）。
+    - 使用浏览器访问 noVNC：http://localhost:6080/ 。
 
-Environment variables
-- AVD_NAME: name for the AVD (default: demo)
-- ANDROID_API: API level (default: 33)
-- IMAGE_TYPE: system image type (default: google_apis)
-- IMAGE_ARCH: ABI (default auto-detected from image built into container)
-- AVD_MEMORY: memory in MB for the emulator (default: 2048)
-- EMULATOR_EXTRA_ARGS: additional args passed to emulator
-- SKIP_SDK_UPDATE: default 1 (image pre-baked). Set to "0" to allow sdkmanager installs at startup.
+ADB 从宿主机连接
+- 如果容器暴露并映射了 ADB/仿真器端口，可以直接从宿主机连接：
+  adb connect <container-ip>:5555
+- 也可以进入容器执行 adb 命令：
+  docker exec -it <container> /bin/bash
+  adb devices
 
-Notes & caveats
-- Image size is large because it includes Android system image and emulator.
-- Default runs use SwiftShader (software rendering) and -accel off for max compatibility.
-- To enable hardware accel on Linux hosts with /dev/kvm, mount /dev/kvm and adjust EMULATOR_EXTRA_ARGS to include "-accel on -gpu host".
-- For the arm build job in Actions we use a runner labeled 'ubuntu-24.04-arm'. If GitHub-hosted runner for that label is not available for your account/region, register a self-hosted arm64 runner and add the label 'ubuntu-24.04-arm'.
-```
+持久化与卷
+- 持久化 AVD、应用或用户数据：
+  docker run -v /path/on/host/avd:/opt/android-sdk/.android/avd ...
+- 将特定目录挂载到容器以保留数据或加速构建输出。
+
+性能与硬件加速
+- 默认使用软件渲染，适用于没有 KVM 的环境。
+- 在支持 KVM 的 Linux 主机上，可以映射 /dev/kvm 提升性能：
+  docker run --device /dev/kvm ...  并通过 EMULATOR_EXTRA_ARGS 传递合适的参数（例如 -accel on -gpu host）。
+
+常用环境变量（运行时）
+- AVD_NAME — 要启动的 AVD 名称（默认 demo）
+- ANDROID_API — Android API 级别（默认 36）
+- IMAGE_TYPE — 系统镜像类型（例如 google_apis）
+- IMAGE_ARCH — 目标 ABI（例如 arm64-v8a、x86_64），留空则自动选择
+- AVD_MEMORY — 分配给模拟器的内存（MB）
+- EMULATOR_EXTRA_ARGS — 额外传给 emulator 的参数
+- SKIP_SDK_UPDATE — 若设置为 0，容器启动时会尝试下载/安装缺失的 SDK 组件
+- VNC_ENABLE — 设置为 1 启用 VNC/noVNC（可选）
+- VNC_PASSWORD — VNC 密码（可选）
+
+CI / 自动化建议
+- 为 CI 场景优先使用 headless 模式并预先在镜像中安装所需 SDK 组件，以提高稳定性与启动速度。
+- 多架构构建建议使用 docker buildx；在使用 QEMU 模拟时注意网络/TLS 行为可能与本地不同，必要时在对应平台的 runner 上执行构建或安装大型组件。
+
+故障排查（常见问题）
+- 模拟器无法启动或屏幕黑屏：检查容器日志、确认 emulator 命令行参数与 DISPLAY（GUI 模式）或 -no-window（headless）。
+- ADB 无法连接：确认 adb 服务在容器中运行并且端口已映射，或直接在容器内执行 adb devices 进行验证。
+- 下载或依赖相关错误：检查构建/运行环境的网络与代理设置，必要时在容器内运行相应命令查看详细错误信息。
+
+示例：以 VNC 模式运行并连接
+docker run --rm -it -p 5900:5900 -p 6080:6080 \
+-e VNC_ENABLE=1 -e VNC_PASSWORD="secret" wangzw/android-emulator:local
+
+更多帮助
+- 若需要针对具体环境（CI、GPU 加速、持久化策略等）获得建议，请说明你的运行环境和目标，我会提供更具体的配置示例。
+
+License
+- 请根据项目需要补充或更新许可证信息.

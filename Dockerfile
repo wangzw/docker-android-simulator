@@ -1,100 +1,132 @@
 FROM --platform=$BUILDPLATFORM rockylinux:9
 
-# Build args
+# Build args (defaults)
 ARG CMDLINE_TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip"
 ARG SDK_TOOLS_DIR="/opt/android-sdk"
-ARG DEFAULT_AVD_NAME="demo"
-ARG ANDROID_API="36"
-ARG IMAGE_TYPE="google_apis"
+ARG TARGETPLATFORM
 
-ENV ANDROID_SDK_ROOT=${SDK_TOOLS_DIR} \
-    ANDROID_HOME=${SDK_TOOLS_DIR} \
-    ANDROID_SDK_HOME=${SDK_TOOLS_DIR} \
-    PATH=${SDK_TOOLS_DIR}/cmdline-tools/latest/bin:${SDK_TOOLS_DIR}/platform-tools:${SDK_TOOLS_DIR}/emulator:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Single canonical SDK location
+ENV ANDROID_SDK_ROOT=${SDK_TOOLS_DIR}
 
-# Install runtime packages and Java
-RUN <<EOF
+# PATH (single ENV per-line)
+ENV PATH=${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/emulator:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Runtime defaults (one ENV per variable)
+ENV AVD_NAME="demo"
+ENV ANDROID_API="36"
+ENV IMAGE_TYPE="google_apis"
+ENV IMAGE_ARCH=""
+ENV AVD_MEMORY="2048"
+ENV EMULATOR_EXTRA_ARGS=""
+ENV SKIP_SDK_UPDATE="1"
+ENV VNC_ENABLE="0"
+ENV VNC_PASSWORD=""
+
+# Install runtime packages and Java 17, plus required VNC/noVNC dependencies.
+# VNC support is mandatory: installation errors will abort the build (dnf errors will surface).
+RUN <<'INSTALL_DEPS'
 set -eux
-dnf -y update 
-dnf -y install unzip tar which git java-17-openjdk-headless libXrandr libXcursor libXinerama libXcomposite libXdamage \
-    mesa-libGL mesa-libEGL mesa-libgbm alsa-lib libX11 glibc-langpack-en
-dnf clean all && rm -rf /var/cache/dnf
-EOF
+dnf -y update
+dnf -y install epel-release dnf-plugins-core
 
-# Download commandline tools using curl (quiet, fail on HTTP errors) and unpack
-RUN <<EOF
+# Base runtime packages and JDK17 (do not attempt to install curl here)
+dnf -y install unzip tar which git java-17-openjdk-headless \
+    ca-certificates \
+    libXrandr libXcursor libXinerama libXcomposite libXdamage \
+    mesa-libGL mesa-libEGL mesa-libgbm alsa-lib libX11 \
+    glibc-langpack-en xorg-x11-server-Xvfb python3 python3-pip
+
+# Install openbox (WM) and VNC server (required). Let dnf surface its own errors if installation fails.
+dnf -y install openbox x11vnc tigervnc-server
+
+# Install websockify (noVNC backend) via pip; allow pip's own errors to surface.
+pip3 install --no-cache-dir websockify==0.11.0
+
+# Mark image as VNC-capable for runtime checks
+mkdir -p /etc/android-emulator
+echo "1" > /etc/android-emulator/vnc_supported
+echo "openbox" > /etc/android-emulator/vnc_wm
+echo "x11vnc,tigervnc-server" > /etc/android-emulator/vnc_server
+
+# Clean caches
+dnf clean all
+rm -rf /var/cache/dnf /var/tmp/*
+INSTALL_DEPS
+
+# Download Android commandline tools and place into SDK tree.
+# Require curl to be present in base image; allow its native error output if missing or download fails.
+RUN <<'FETCH_CMDLINE'
 set -eux
-mkdir -p ${SDK_TOOLS_DIR}
+command -v curl >/dev/null 2>&1 || { echo "[build][error] curl not found in base image; required to download Android commandline tools."; exit 1; }
+mkdir -p "${ANDROID_SDK_ROOT}"
 cd /tmp
 curl -fsSL -o commandlinetools.zip "${CMDLINE_TOOLS_URL}"
 unzip -q commandlinetools.zip -d /tmp/cmdline-tools-temp
-mkdir -p ${SDK_TOOLS_DIR}/cmdline-tools
-mv /tmp/cmdline-tools-temp/cmdline-tools ${SDK_TOOLS_DIR}/cmdline-tools/latest
+mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
+mv /tmp/cmdline-tools-temp/cmdline-tools "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
 rm -rf /tmp/commandlinetools.zip /tmp/cmdline-tools-temp
-EOF
+FETCH_CMDLINE
 
-# Use TARGETPLATFORM to pick ABI (x86_64 for amd64, arm64-v8a for arm64)
-# Install platform-tools, emulator, platform and the matching system-image.
-ARG TARGETPLATFORM
-RUN <<EOF
+# Clone noVNC frontend (let git's errors surface if cloning fails)
+RUN <<'CLONE_NOVNC'
+set -eux
+git clone --depth 1 https://github.com/novnc/noVNC.git /opt/noVNC
+git clone --depth 1 https://github.com/novnc/websockify /opt/noVNC/utils/websockify
+CLONE_NOVNC
+
+# Install SDK components for the build target (platform-tools, emulator, platform, system-image).
+RUN <<'INSTALL_SDK'
 set -eux
 case "${TARGETPLATFORM:-}" in
-  "linux/arm64"|"linux/arm64/v8"|"linux/arm64/v8l"|"linux/arm64/v8a") IMAGE_ARCH="arm64-v8a" ;;
-  *) IMAGE_ARCH="x86_64" ;;
-esac;
-
-echo "Target platform: ${TARGETPLATFORM:-unknown} -> using system image ABI: ${IMAGE_ARCH}";
-SDKMANAGER=${SDK_TOOLS_DIR}/cmdline-tools/latest/bin/sdkmanager;
-# create repos.cfg to avoid warnings, accept licenses and update indices quietly
-mkdir -p /root/.android && touch /root/.android/repositories.cfg;
-
-yes | "${SDKMANAGER}" --sdk_root="${SDK_TOOLS_DIR}" --licenses >/dev/null || true
-"${SDKMANAGER}" --sdk_root="${SDK_TOOLS_DIR}" --update >/dev/null
-
-"${SDKMANAGER}" --sdk_root="${SDK_TOOLS_DIR}" --list
-
-# install required components (minimize output but let failures surface)
-"${SDKMANAGER}" --sdk_root="${SDK_TOOLS_DIR}" "platform-tools" "emulator" "platforms;android-${ANDROID_API}" "system-images;android-${ANDROID_API};${IMAGE_TYPE};${IMAGE_ARCH}"
-EOF
-
-# Create default AVD (demo) matching the chosen ABI
-ARG DEFAULT_AVD_NAME
-
-RUN <<EOF
-mkdir -p ${SDK_TOOLS_DIR}/.android
-
-case "${TARGETPLATFORM:-}" in
-  "linux/arm64"*) IMAGE_ARCH_SEL="arm64-v8a" ;;
-  *) IMAGE_ARCH_SEL="x86_64" ;;
+  "linux/arm64"|"linux/arm64/v8"|"linux/arm64/v8l"|"linux/arm64/v8a")
+    IMAGE_ARCH="arm64-v8a"
+    ;;
+  *)
+    IMAGE_ARCH="x86_64"
+    ;;
 esac
+echo "Target: ${TARGETPLATFORM:-unknown} -> ABI: ${IMAGE_ARCH}"
+SDKMANAGER="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+[ -x "${SDKMANAGER}" ]
+mkdir -p /root/.android
+: > /root/.android/repositories.cfg
+yes | "${SDKMANAGER}" --sdk_root="${ANDROID_SDK_ROOT}" --licenses >/dev/null || true
+"${SDKMANAGER}" --sdk_root="${ANDROID_SDK_ROOT}" --update
+"${SDKMANAGER}" --sdk_root="${ANDROID_SDK_ROOT}" "platform-tools" "emulator" "platforms;android-${ANDROID_API}" "system-images;android-${ANDROID_API};${IMAGE_TYPE};${IMAGE_ARCH}"
+INSTALL_SDK
 
-# ensure avdmanager sees the SDK via env var in the same shell
-export ANDROID_SDK_ROOT=${SDK_TOOLS_DIR}
+# Create default AVD (demo) for the chosen ABI. export ANDROID_SDK_ROOT in same shell so avdmanager picks it up.
+RUN <<'CREATE_AVD'
+set -eux
+mkdir -p "${ANDROID_SDK_ROOT}/.android"
+case "${TARGETPLATFORM:-}" in
+  "linux/arm64"*)
+    IMAGE_ARCH_SEL="arm64-v8a"
+    ;;
+  *)
+    IMAGE_ARCH_SEL="x86_64"
+    ;;
+esac
+export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT}"
+echo "Creating AVD 'demo' (ABI=${IMAGE_ARCH_SEL})"
+echo "no" | avdmanager create avd -n "demo" -k "system-images;android-${ANDROID_API};${IMAGE_TYPE};${IMAGE_ARCH_SEL}" --force
+CREATE_AVD
 
-echo "Creating AVD with ABI=${IMAGE_ARCH_SEL}"
-echo "no" | avdmanager create avd -n "${DEFAULT_AVD_NAME}" -k "system-images;android-${ANDROID_API};${IMAGE_TYPE};${IMAGE_ARCH_SEL}" --force || true
-EOF
+# Create non-root user and set ownership of SDK
+RUN <<'SETUP_USER'
+set -eux
+useradd -m -u 1000 android || true
+chown -R android:android "${ANDROID_SDK_ROOT}" /home/android || true
+SETUP_USER
 
-# Create non-root user and set ownership
-RUN useradd -m -u 1000 android && chown -R android:android ${SDK_TOOLS_DIR} /home/android
-
-# Copy entrypoint
+# Copy entrypoint and make executable
 COPY start-emulator.sh /usr/local/bin/start-emulator.sh
 RUN chmod +x /usr/local/bin/start-emulator.sh
 
 USER android
 WORKDIR /home/android
 
-# Expose emulator / adb ports
-EXPOSE 5554 5555 5037
-
-# Defaults (can be overridden at runtime)
-ENV AVD_NAME="demo" \
-    ANDROID_API="33" \
-    IMAGE_TYPE="google_apis" \
-    IMAGE_ARCH="" \
-    AVD_MEMORY="2048" \
-    EMULATOR_EXTRA_ARGS="" \
-    SKIP_SDK_UPDATE="1"
+# Expose emulator / adb / VNC ports
+EXPOSE 5554 5555 5037 5900 6080
 
 ENTRYPOINT ["/usr/local/bin/start-emulator.sh"]
