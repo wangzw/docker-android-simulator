@@ -8,38 +8,40 @@ ARG TARGETPLATFORM
 # Single canonical SDK location
 ENV ANDROID_SDK_ROOT=${SDK_TOOLS_DIR}
 
-# PATH (single ENV per-line)
+# PATH (one ENV per line)
 ENV PATH=${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/emulator:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# Runtime defaults (one ENV per variable)
+# Runtime defaults (one ENV per line)
 ENV AVD_NAME="demo"
 ENV ANDROID_API="36"
 ENV IMAGE_TYPE="google_apis"
 ENV IMAGE_ARCH=""
-ENV AVD_MEMORY="2048"
+ENV AVD_MEMORY="4096"
 ENV EMULATOR_EXTRA_ARGS=""
 ENV SKIP_SDK_UPDATE="1"
 ENV VNC_ENABLE="0"
 ENV VNC_PASSWORD=""
 
 # Install runtime packages and Java 17, plus required VNC/noVNC dependencies.
-# VNC support is mandatory: installation errors will abort the build (dnf errors will surface).
+# VNC support is mandatory: dnf errors will surface if packages cannot be installed.
 RUN <<'INSTALL_DEPS'
 set -eux
+
+# Basic update and EPEL
 dnf -y update
 dnf -y install epel-release dnf-plugins-core
 
-# Base runtime packages and JDK17 (do not attempt to install curl here)
+# Base runtime packages and JDK17 (do not install curl here)
 dnf -y install unzip tar which git java-17-openjdk-headless \
     ca-certificates \
     libXrandr libXcursor libXinerama libXcomposite libXdamage \
-    mesa-libGL mesa-libEGL mesa-libgbm alsa-lib libX11 \
+    mesa-libGL mesa-libEGL mesa-libgbm alsa-lib pulseaudio-libs libX11 \
     glibc-langpack-en xorg-x11-server-Xvfb python3 python3-pip
 
 # Install openbox (WM) and VNC server (required). Let dnf surface its own errors if installation fails.
 dnf -y install openbox x11vnc tigervnc-server
 
-# Install websockify (noVNC backend) via pip; allow pip's own errors to surface.
+# Install websockify (noVNC backend) via pip; allow pip errors to surface.
 pip3 install --no-cache-dir websockify==0.11.0
 
 # Mark image as VNC-capable for runtime checks
@@ -54,7 +56,7 @@ rm -rf /var/cache/dnf /var/tmp/*
 INSTALL_DEPS
 
 # Download Android commandline tools and place into SDK tree.
-# Require curl to be present in base image; allow its native error output if missing or download fails.
+# Require curl to be present in base image; allow curl's own error output if missing or download fails.
 RUN <<'FETCH_CMDLINE'
 set -eux
 command -v curl >/dev/null 2>&1 || { echo "[build][error] curl not found in base image; required to download Android commandline tools."; exit 1; }
@@ -67,7 +69,7 @@ mv /tmp/cmdline-tools-temp/cmdline-tools "${ANDROID_SDK_ROOT}/cmdline-tools/late
 rm -rf /tmp/commandlinetools.zip /tmp/cmdline-tools-temp
 FETCH_CMDLINE
 
-# Clone noVNC frontend (let git's errors surface if cloning fails)
+# Clone noVNC frontend and websockify (let git errors surface)
 RUN <<'CLONE_NOVNC'
 set -eux
 git clone --depth 1 https://github.com/novnc/noVNC.git /opt/noVNC
@@ -90,6 +92,7 @@ SDKMANAGER="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
 [ -x "${SDKMANAGER}" ]
 mkdir -p /root/.android
 : > /root/.android/repositories.cfg
+# Accept licenses and update metadata; allow sdkmanager errors to surface
 yes | "${SDKMANAGER}" --sdk_root="${ANDROID_SDK_ROOT}" --licenses >/dev/null || true
 "${SDKMANAGER}" --sdk_root="${ANDROID_SDK_ROOT}" --update
 "${SDKMANAGER}" --sdk_root="${ANDROID_SDK_ROOT}" "platform-tools" "emulator" "platforms;android-${ANDROID_API}" "system-images;android-${ANDROID_API};${IMAGE_TYPE};${IMAGE_ARCH}"
@@ -112,11 +115,19 @@ echo "Creating AVD 'demo' (ABI=${IMAGE_ARCH_SEL})"
 echo "no" | avdmanager create avd -n "demo" -k "system-images;android-${ANDROID_API};${IMAGE_TYPE};${IMAGE_ARCH_SEL}" --force
 CREATE_AVD
 
-# Create non-root user and set ownership of SDK
+# Create non-root user and set ownership of SDK, set writable permissions for SDK and create android HOME .android
 RUN <<'SETUP_USER'
 set -eux
 useradd -m -u 1000 android || true
+
+# Ensure SDK ownership and writable permissions
 chown -R android:android "${ANDROID_SDK_ROOT}" /home/android || true
+chmod -R u+rw "${ANDROID_SDK_ROOT}" || true
+
+# Create android user .android dir and a placeholder emu-update-last-check.ini to avoid runtime warnings
+mkdir -p /home/android/.android
+touch /home/android/.android/emu-update-last-check.ini
+chown -R android:android /home/android/.android || true
 SETUP_USER
 
 # Copy entrypoint and make executable
